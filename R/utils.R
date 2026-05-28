@@ -6,11 +6,11 @@ fetch_json <- function(url) {
   readLines(con, warn = FALSE)
 }
 
+column_fields <- c("name", "type", "description", "nullable", "allowed_values")
+
 #' @noRd
-get_catalog <- function() {
-  if (!is.null(pkg$catalog)) {
-    return(pkg$catalog)
-  }
+load_manifest <- function() {
+  if (!is.null(pkg$catalog)) return(invisible(NULL))
 
   raw <- tryCatch(
     jsonlite::fromJSON(fetch_json(pkg$catalog_url), simplifyDataFrame = FALSE),
@@ -23,39 +23,55 @@ get_catalog <- function() {
     }
   )
 
-  entries <- list()
+  catalog <- list()
+  namespaces <- list()
   for (ns in names(raw$namespaces)) {
-    tables <- raw$namespaces[[ns]]$tables
-    for (table_name in names(tables)) {
-      meta <- tables[[table_name]]
-      partition_by <- meta$partition_by
-      if (is.null(partition_by)) partition_by <- character(0)
-      sort_by <- meta$sort_by
-      if (is.null(sort_by)) sort_by <- character(0)
+    ns_data <- raw$namespaces[[ns]]
+    table_fqns <- paste0(ns, ".", names(ns_data$tables))
 
-      keep <- c(
-        "name", "type", "description",
-        "nullable", "allowed_values"
-      )
-      columns <- lapply(meta$columns, function(col) {
-        col[intersect(names(col), keep)]
-      })
-
-      ns_data <- raw$namespaces[[ns]]
-      entries[[paste0(ns, ".", table_name)]] <- list(
+    for (i in seq_along(ns_data$tables)) {
+      meta <- ns_data$tables[[i]]
+      catalog[[table_fqns[i]]] <- list(
         metadata_json = meta$metadata_json,
-        partition_by = as.character(partition_by),
-        sort_by = as.character(sort_by),
+        partition_by = as.character(meta$partition_by),
+        sort_by = as.character(meta$sort_by),
         description = meta$description,
         citation = ns_data$citation,
         source_url = ns_data$source_url,
         license = ns_data$license,
-        columns = columns
+        columns = lapply(
+          meta$columns,
+          function(col) col[intersect(names(col), column_fields)]
+        )
       )
     }
+
+    namespaces[[ns]] <- list(
+      id = ns,
+      name = ns_data$name,
+      description = ns_data$description,
+      source_url = ns_data$source_url,
+      license = ns_data$license,
+      instructions = ns_data$instructions,
+      citation = ns_data$citation,
+      tables = table_fqns
+    )
   }
-  pkg$catalog <- entries
+  pkg$catalog <- catalog
+  pkg$namespaces <- namespaces
+  invisible(NULL)
+}
+
+#' @noRd
+get_catalog <- function() {
+  load_manifest()
   pkg$catalog
+}
+
+#' @noRd
+get_namespaces <- function() {
+  load_manifest()
+  pkg$namespaces
 }
 
 #' @noRd
@@ -78,6 +94,17 @@ get_credentials <- function() {
 }
 
 #' @noRd
+reset <- function() {
+  if (!is.null(pkg$conn)) {
+    try(DBI::dbDisconnect(pkg$conn, shutdown = TRUE), silent = TRUE)
+  }
+  pkg$catalog <- NULL
+  pkg$namespaces <- NULL
+  pkg$credentials <- NULL
+  pkg$conn <- NULL
+}
+
+#' @noRd
 get_connection <- function() {
   if (!is.null(pkg$conn)) {
     return(pkg$conn)
@@ -92,9 +119,9 @@ get_connection <- function() {
     pkg$conn,
     "CREATE SECRET (TYPE s3, KEY_ID ?, SECRET ?, ENDPOINT ?, URL_STYLE 'path')",
     params = list(
-      credentials$BB_R2_ACCESS_KEY_ID,
-      credentials$BB_R2_SECRET_ACCESS_KEY,
-      paste0(credentials$BB_R2_ACCOUNT_ID, ".r2.cloudflarestorage.com")
+      credentials$R2_ACCESS_KEY_ID,
+      credentials$R2_SECRET_ACCESS_KEY,
+      paste0(credentials$R2_ACCOUNT_ID, ".r2.cloudflarestorage.com")
     )
   )
 
